@@ -159,6 +159,7 @@ bool init() {
     g_device_props = props;
     if (is_xclipse()) log("nvn/vk: Samsung Xclipse GPU detected (forcing CPU BC texture decode for compatibility)");
     if (is_mali()) log("nvn/vk: ARM Mali GPU detected (emulating R11G11B10F as RGBA16F to prevent green/purple flickering)");
+    if (is_turnip()) log("nvn/vk: Mesa Turnip driver detected (emulating R11G11B10F as RGBA16F and disabling UBWC format lists to prevent tile artifacts)");
     if (is_adreno_8xx()) log("nvn/vk: Qualcomm Adreno 8xx GPU detected (disabling chunked submits to avoid battle hang)");
     p_vkGetPhysicalDeviceMemoryProperties(g_physical, &g_memory);
     g_integrated = props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
@@ -329,7 +330,7 @@ bool init() {
     // spills bigger uploads to staging buffers in proportion to the ring).
     {
 #if defined(__ANDROID__)
-        uint64_t ring_mb = 256;  // 256 MB upload ring on Android: >120 MB headroom over peak transition burst (134.2 MB), prevents ring exhaustion while keeping memory footprint safely at ~2.7 GB (well under 6.0 GB ceiling)
+        uint64_t ring_mb = 384;  // 384 MB upload ring on Android: ample headroom over peak transition burst (268.4 MB), prevents ring exhaustion while keeping memory footprint safely within 6.0 GB ceiling
 #else
         uint64_t ring_mb = 256;
 #endif
@@ -489,6 +490,9 @@ bool is_mali() {
 }
 bool is_adreno() {
     return std::strstr(g_device_props.deviceName, "Adreno") != nullptr || g_device_props.vendorID == 0x5143;
+}
+bool is_turnip() {
+    return std::strstr(g_device_props.deviceName, "Turnip") != nullptr;
 }
 bool is_adreno_6xx_or_older() {  // "Adreno (TM) 610", 5xx...
     const char* p = std::strstr(g_device_props.deviceName, "Adreno");

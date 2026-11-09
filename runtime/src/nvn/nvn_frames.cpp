@@ -63,7 +63,11 @@ uint64_t fence_timeout_ns() {
     static const uint64_t timeout = [] {
         const char* e = std::getenv("NX_FENCE_TIMEOUT_MS");
         if (e && std::atol(e) > 0) return uint64_t(std::atol(e)) * 1'000'000ull;
-        return 5'000'000'000ull;  // 5 seconds default (2 s was too tight for heavy cutscene transitions on mobile)
+#if defined(__ANDROID__)
+        return 12'000'000'000ull;  // 12 seconds on mobile: heavy pipeline compilations during flight/combat transitions can take 6-10s
+#else
+        return 5'000'000'000ull;  // 5 seconds default
+#endif
     }();
     return timeout;
 }
@@ -469,17 +473,9 @@ void frame_init(VkCommandPool pool, uint32_t family, VkBuffer ring, uint8_t* rin
 #if defined(__ANDROID__)
     if (std::getenv("NX_SUBMIT_CHUNK_DRAWS")) {
         g_chunk_draws = uint64_t(env_int("NX_SUBMIT_CHUNK_DRAWS"));
-    } else if (is_mali() || is_xclipse() || is_adreno_8xx()) {
-        g_chunk_draws = 0;
-        if (is_mali()) {
-            log("nvn/vk: Mali GPU detected: chunk submits disabled to prevent driver queue hang");
-        } else if (is_adreno_8xx()) {
-            log("nvn/vk: Adreno 8xx GPU detected: chunk submits disabled to prevent GPU hang");
-        } else {
-            log("nvn/vk: Xclipse GPU detected: chunk submits disabled to prevent GPU hang");
-        }
     } else {
-        g_chunk_draws = 150;
+        g_chunk_draws = 0;
+        log("nvn/vk: mobile GPU detected: chunk submits disabled to prevent queue hang and preserve tile cache");
     }
 #else
     g_chunk_draws = uint64_t(env_int("NX_SUBMIT_CHUNK_DRAWS"));
@@ -707,11 +703,6 @@ Upload frame_upload_alloc(uint64_t size, uint64_t align) {
     if (g_overflow.serial == cur_serial) {
         uint64_t chunk_at = (g_overflow.used + align - 1) & ~(align - 1);
         if (chunk_at + size <= g_overflow.size) {
-            if (g_current && g_current->waited < g_current->part) {
-                VkFence fences[kMaxParts];
-                wait_fences(fences, queued_fences(*g_current, g_current->part, fences));
-                g_current->waited = g_current->part;
-            }
             Upload s{g_overflow.base.buffer, g_overflow.base.offset + chunk_at, g_overflow.base.ptr + chunk_at};
             g_overflow.used = chunk_at + size;
             return s;

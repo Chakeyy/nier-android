@@ -62,6 +62,7 @@ const VkPhysicalDeviceFeatures& vk_features();
 bool is_xclipse();
 bool is_mali();
 bool is_adreno();
+bool is_turnip();
 bool is_adreno_8xx();
 bool is_adreno_6xx_or_older();
 bool gpu_require_subgroup32();  // compute pipelines pin the subgroup size to 32 (nvn_pipeline.cpp)
