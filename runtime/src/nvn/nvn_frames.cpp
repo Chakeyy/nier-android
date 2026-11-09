@@ -59,11 +59,19 @@ using namespace nx::vk;
 VkQueue vk_queue();                // nvn_vk.cpp
 std::recursive_mutex& gpu_lock();  // nvn_vk.cpp
 
+uint64_t fence_timeout_ns() {
+    static const uint64_t timeout = [] {
+        const char* e = std::getenv("NX_FENCE_TIMEOUT_MS");
+        if (e && std::atol(e) > 0) return uint64_t(std::atol(e)) * 1'000'000ull;
+        return 5'000'000'000ull;  // 5 seconds default (2 s was too tight for heavy cutscene transitions on mobile)
+    }();
+    return timeout;
+}
+
 namespace {
 
 constexpr uint32_t kMaxSlots = 8;
-constexpr uint32_t kMaxParts = 8;  // command buffers per submit: chunks, the split, the last part
-constexpr uint64_t kFenceTimeout = 2'000'000'000ull;  // a frame's work takes milliseconds; longer is a hung shader
+constexpr uint32_t kMaxParts = 64;  // command buffers per submit: chunks, the split, the last part (up to 64 tracked in queued bitfield)
 
 struct Slot {
     VkCommandPool pool = VK_NULL_HANDLE;  // its own (the parts reset together), unless NX_CB_RESET=1
@@ -71,7 +79,7 @@ struct Slot {
     VkCommandBuffer cbs[kMaxParts] = {};  // the parts, queued in order
     VkFence fences[kMaxParts] = {};
     uint32_t part = 0;                    // the part being recorded
-    uint32_t queued = 0;                  // bit k: part k was queued (its fence will signal)
+    uint64_t queued = 0;                  // bit k: part k was queued (its fence will signal)
     uint32_t waited = 0;                  // parts below this were waited for (the ring may reuse their data)
     int split_part = -1;                  // pipelined: the part that ends with the last dispatch
     bool ok = true;                       // the current part is recording (a failed begin leaves nothing to queue)
@@ -145,6 +153,17 @@ std::mutex g_grave_lock;
 std::vector<std::pair<uint64_t, std::shared_ptr<GpuImage>>> g_grave;
 std::vector<std::tuple<uint64_t, VkBuffer, VkDeviceMemory>> g_staging;  // staging_alloc's, freed like the grave's
 
+// Overflow staging chunk: when the upload ring is exhausted in a single submit, small buffers are carved
+// from this chunk rather than causing individual vkAllocateMemory calls for every tiny buffer in the submit.
+struct OverflowChunk {
+    Upload base{};
+    uint64_t size = 0;
+    uint64_t used = 0;
+    uint64_t serial = 0;
+};
+OverflowChunk g_overflow{};
+constexpr uint64_t kOverflowChunkSize = 8 * 1024 * 1024;  // 8 MB chunk for small overflow uploads
+
 // GPU-written images of destroyed textures, kept a few submits for a new texture over the same memory with the same
 // shape. Wonder re-creates ~180 NVNtexture objects per frame over the same render-target memory: each got a new
 // image, and its first draw ended the render pass to set it up (most of the ~300 passes per frame, each reloading
@@ -170,8 +189,8 @@ uint64_t g_reuse_clock = 0, g_reused = 0;
 void wait_fences(const VkFence* fences, uint32_t n) {
     if (!n) return;
     uint64_t t0 = plat::monotonic_ns();
-    VkResult r = p_vkWaitForFences(vk_device(), n, fences, VK_TRUE, kFenceTimeout);
-    if (r == VK_TIMEOUT) gpu_hung("a submit did not finish in 2 s");
+    VkResult r = p_vkWaitForFences(vk_device(), n, fences, VK_TRUE, fence_timeout_ns());
+    if (r == VK_TIMEOUT) gpu_hung("a submit did not finish in time");
     if (r == VK_ERROR_DEVICE_LOST) gpu_hung("vkWaitForFences");
     if (r != VK_SUCCESS) log("nvn/vk: vkWaitForFences failed (%d)", int(r));
     g_times.fence_ns += plat::monotonic_ns() - t0;
@@ -381,7 +400,7 @@ int env_int(const char* name) {
 VkCommandBuffer next_part(Slot& s) {
     pass_end_only(s.cbs[s.part], 0);
     gpu_busy_part_end(uint32_t(&s - g_slots), s.part, s.cbs[s.part]);
-    if (s.ok && submit_part(s.cbs[s.part], s.fences[s.part], VK_NULL_HANDLE, VK_NULL_HANDLE)) s.queued |= 1u << s.part;
+    if (s.ok && submit_part(s.cbs[s.part], s.fences[s.part], VK_NULL_HANDLE, VK_NULL_HANDLE)) s.queued |= 1ull << s.part;
     s.part++;
     s.ok = begin_part(s.cbs[s.part]);
     if (s.ok) gpu_busy_part_begin(uint32_t(&s - g_slots), s.part, s.cbs[s.part]);
@@ -450,9 +469,15 @@ void frame_init(VkCommandPool pool, uint32_t family, VkBuffer ring, uint8_t* rin
 #if defined(__ANDROID__)
     if (std::getenv("NX_SUBMIT_CHUNK_DRAWS")) {
         g_chunk_draws = uint64_t(env_int("NX_SUBMIT_CHUNK_DRAWS"));
-    } else if (is_adreno_8xx()) {
-        g_chunk_draws = 0;  // Adreno 8xx driver bug: chunked submissions hang the GPU during battle passes
-        log("nvn/vk: Adreno 8xx GPU detected: chunk submits disabled to prevent GPU hang");
+    } else if (is_mali() || is_xclipse() || is_adreno_8xx()) {
+        g_chunk_draws = 0;
+        if (is_mali()) {
+            log("nvn/vk: Mali GPU detected: chunk submits disabled to prevent driver queue hang");
+        } else if (is_adreno_8xx()) {
+            log("nvn/vk: Adreno 8xx GPU detected: chunk submits disabled to prevent GPU hang");
+        } else {
+            log("nvn/vk: Xclipse GPU detected: chunk submits disabled to prevent GPU hang");
+        }
     } else {
         g_chunk_draws = 150;
     }
@@ -482,6 +507,7 @@ VkCommandBuffer frame_begin(bool replay) {
     s.begin_ns = plat::monotonic_ns();
     g_plan_dispatches = g_seen_dispatches = 0;
     g_chunking = false;
+    g_overflow = {};
     if (!begin_part(s.cbs[0])) {
         g_current = nullptr;
         return VK_NULL_HANDLE;
@@ -498,7 +524,8 @@ size_t frame_plan_split(const std::vector<std::shared_ptr<CmdList>>& lists) {
     g_plan_dispatches = g_seen_dispatches = 0;
     g_chunking = g_chunk_draws && g_current, g_chunk_from = UINT64_MAX;  // not with the profile (not called then)
     // NX_COMPUTE_SEPARATE's write-backs are not counted by written_bind_count(): such a submit is waited for whole.
-    if (!pipelined() || off || !g_current || replay::written_separate()) return SIZE_MAX;
+    // On Mali / Xclipse TBDR GPUs, mid-frame splits break tile cache and force tile store/reload, reducing framerate.
+    if (!pipelined() || off || !g_current || replay::written_separate() || is_mali() || is_xclipse()) return SIZE_MAX;
     size_t last = SIZE_MAX;
     for (size_t k = 0; k < lists.size(); k++)
         if (uint32_t n = count_dispatches(*lists[k], 0)) g_plan_dispatches += n, last = k;
@@ -567,7 +594,7 @@ void frame_submit(VkSemaphore wait, VkSemaphore signal, std::vector<WriteBack> w
     s.replay_ns = s.replay ? plat::monotonic_ns() - s.begin_ns : 0;
     if (s.ok) gpu_busy_part_end(uint32_t(&s - g_slots), s.part, s.cbs[s.part]);
     const bool has_last = s.ok && submit_part(s.cbs[s.part], s.fences[s.part], wait, signal);
-    if (has_last) s.queued |= 1u << s.part;
+    if (has_last) s.queued |= 1ull << s.part;
     if (!s.queued) return;  // nothing ran: no results to copy back, the slot stays free
     s.serial = ++g_submitted;
     s.ring_end = g_head;
@@ -673,21 +700,59 @@ void frame_log(uint64_t frames) {
 }
 
 Upload frame_upload_alloc(uint64_t size, uint64_t align) {
-    uint64_t at = (g_head + align - 1) & ~(align - 1);
-    if (at % g_ring_size + size > g_ring_size) at += g_ring_size - at % g_ring_size;  // never split: the next lap
-    while (at + size > g_tail + g_ring_size)  // the oldest submits' data is still read: wait for them
-        if (!retire_oldest()) {
-            // The submit's parts queued so far may still read its data: wait for them first.
+    if (align < 16) align = 16;
+    if (!size) size = 16;
+    uint64_t cur_serial = frame_recording_serial();
+    // Fast path: if the ring already overflowed in this submit, carve directly from the staging chunk
+    if (g_overflow.serial == cur_serial) {
+        uint64_t chunk_at = (g_overflow.used + align - 1) & ~(align - 1);
+        if (chunk_at + size <= g_overflow.size) {
             if (g_current && g_current->waited < g_current->part) {
                 VkFence fences[kMaxParts];
                 wait_fences(fences, queued_fences(*g_current, g_current->part, fences));
                 g_current->waited = g_current->part;
             }
-            log("nvn/vk: upload buffer full (%llu bytes in this submit)", (unsigned long long)(at + size - g_begin));
+            Upload s{g_overflow.base.buffer, g_overflow.base.offset + chunk_at, g_overflow.base.ptr + chunk_at};
+            g_overflow.used = chunk_at + size;
+            return s;
+        }
+    }
+    uint64_t at = (g_head + align - 1) & ~(align - 1);
+    if (at % g_ring_size + size > g_ring_size) at += g_ring_size - at % g_ring_size;  // never split: the next lap
+    while (at + size > g_tail + g_ring_size) {  // the oldest submits' data is still read: wait for them
+        if (!retire_oldest()) {
+            static uint64_t s_last_overflow_serial = 0;
+            if (s_last_overflow_serial != cur_serial) {
+                log("nvn/vk: upload ring exhausted (%llu bytes in this submit, ring %llu MB): allocating staging fallback",
+                    (unsigned long long)(at + size - g_begin), (unsigned long long)(g_ring_size >> 20));
+                s_last_overflow_serial = cur_serial;
+            }
+            // Drain any queued in-flight parts before allocating or returning staging memory
+            if (g_current && g_current->waited < g_current->part) {
+                VkFence fences[kMaxParts];
+                wait_fences(fences, queued_fences(*g_current, g_current->part, fences));
+                g_current->waited = g_current->part;
+            }
+            // Sub-allocate from a staging chunk to prevent cascading individual vkAllocateMemory calls
+            if (size < kOverflowChunkSize) {
+                Upload chunk = staging_alloc(kOverflowChunkSize);
+                if (chunk.buffer != VK_NULL_HANDLE) {
+                    g_overflow.base = chunk;
+                    g_overflow.size = kOverflowChunkSize;
+                    g_overflow.used = size;
+                    g_overflow.serial = cur_serial;
+                    return chunk;
+                }
+            }
+            // Dedicated staging buffer for large uploads (>= 8 MB) or if chunk allocation failed
+            Upload s = staging_alloc(size);
+            if (s.buffer != VK_NULL_HANDLE) return s;
+            log("nvn/vk: staging buffer allocation failed: wrapping upload ring");
+            replay::dedup_reset();  // reset once per overflowing submit to invalidate overwritten data without cascading
             g_tail = at + size - g_ring_size;  // this submit wraps over its own first data, as the synchronous path
-            replay::dedup_reset();
             break;
         }
+    }
     g_head = at + size;
     uint64_t off = at % g_ring_size;
     return {g_ring, off, g_ring_ptr + off};
@@ -840,9 +905,9 @@ Upload staging_alloc(uint64_t size) {
     VkDevice d = vk_device();
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.size = size;
-    bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bi.usage = kUploadUsage;
     VkBuffer buffer = VK_NULL_HANDLE;
-    if (p_vkCreateBuffer(d, &bi, nullptr, &buffer) != VK_SUCCESS) return upload_alloc(size, 16);
+    if (p_vkCreateBuffer(d, &bi, nullptr, &buffer) != VK_SUCCESS) return {VK_NULL_HANDLE, 0, nullptr};
     VkMemoryRequirements req{};
     p_vkGetBufferMemoryRequirements(d, buffer, &req);
     VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
@@ -855,7 +920,7 @@ Upload staging_alloc(uint64_t size) {
         p_vkMapMemory(d, memory, 0, VK_WHOLE_SIZE, 0, &p) != VK_SUCCESS) {
         p_vkDestroyBuffer(d, buffer, nullptr);
         if (memory) p_vkFreeMemory(d, memory, nullptr);
-        return upload_alloc(size, 16);
+        return {VK_NULL_HANDLE, 0, nullptr};
     }
     std::lock_guard lk(g_grave_lock);
     g_staging.push_back({g_submitted + 1, buffer, memory});

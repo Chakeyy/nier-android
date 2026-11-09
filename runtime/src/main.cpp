@@ -123,6 +123,7 @@ static void rtld_mark(CPU&) {}
 // nnMain, as called by nn::init::Start: the constructors need the program's allocator, which nninitStartup has
 // set up by now, so they run here, right before the real nnMain.
 static void nn_main(CPU& c) {
+    plat::place_fast_cores();
     init_module(c, *g_sdk);
     init_module(c, *g_main);
     game::after_init();

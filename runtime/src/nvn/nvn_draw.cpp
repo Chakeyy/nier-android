@@ -421,11 +421,14 @@ bool shadow_draw_skipped(const Targets& t) {
            c->view_type == VK_IMAGE_VIEW_TYPE_2D;
 }
 
-// NX_DISABLE_BLOOM=1 (the launcher's "Post-procesado: desactivado"): no draws into bloom/blur mip chains.
+// NX_DISABLE_BLOOM=1 (or GRAPHICS=low): no draws into bloom/blur mip chains.
 bool bloom_draw_skipped(const Targets& t) {
     static const bool off = [] {
         const char* e = std::getenv("NX_DISABLE_BLOOM");
-        return e && (e[0] == '1' || std::strcmp(e, "true") == 0);
+        if (e) return e[0] == '1' || std::strcmp(e, "true") == 0;
+        const char* g = std::getenv("GRAPHICS");
+        if (g && std::strcmp(g, "low") == 0) return true;
+        return false;
     }();
     if (!off) return false;
     if (t.color_count > 0 && t.views.level[0] > 0) return true;

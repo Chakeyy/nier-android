@@ -56,7 +56,7 @@ import java.util.Map;
  *   frame rate  30 (NX_FPS_CAP=30, default: runtime nvn_queue.cpp holds the present interval at 2) or 60
  *   shadows     on (NX_SHADOWS=1, default) or off (0: runtime nvn_draw.cpp skips the draws into shadow maps)
  *   minimum dynamic resolution  NX_NIER_MIN_SCALE: how low the game's dynamic resolution may take its 3D when the GPU
- *               is behind, 0.5, 0.6 (default), 0.7 or 0.8333 (the game's own floor; games/nier/game.cpp)
+ *               is behind, 0.45, 0.5 (default), 0.6, 0.7 or 0.8333 (the game's own floor; games/nier/game.cpp)
  *   bloom       experimental: on (NX_DISABLE_BLOOM=0, default) or off (1: runtime nvn_draw.cpp skips every draw into a
  *               colour target's smaller mip levels, which is where bloom and blur chains go, and maybe other effects)
  *   FPS counter off (default) or on (NX_SHOW_FPS)
@@ -333,17 +333,17 @@ public class Launcher extends Activity {
         options.add(new Option("NX_FPS_CAP", "Fotogramas por segundo", "Frame rate", new String[] {"30", "60"},
                 new String[] {"30 fps", "60 fps (experimental)"}, new String[] {"30 fps", "60 fps (experimental)"}, 0));
         options.add(new Option("NX_SHADOWS", "Sombras", "Shadows", new String[] {"0", "1"},
-                new String[] {"Desactivadas", "Activadas"}, new String[] {"Off", "On"}, 1));
+                new String[] {"Desactivadas", "Activadas"}, new String[] {"Off", "On"}, 0));
         options.add(new Option("NX_NIER_MIN_SCALE", "Resolución dinámica mínima", "Minimum dynamic resolution",
-                new String[] {"0.5", "0.6", "0.7", "0.8333"},
-                new String[] {"50 % (más fluido)", "60 %", "70 %", "83 % (la del juego)"},
-                new String[] {"50% (smoother)", "60%", "70%", "83% (the game's)"}, 1));
+                new String[] {"0.45", "0.5", "0.6", "0.7", "0.8333"},
+                new String[] {"45 % (más fluido)", "50 %", "60 %", "70 %", "83 % (la del juego)"},
+                new String[] {"45% (smoother)", "50%", "60%", "70%", "83% (the game's)"}, 1));
         // Experimental: the runtime's heuristic (draws into mip levels above 0) was made on P5R, so it may take other
         // effects with the bloom. Bloom stays on unless the player turns it off.
         options.add(new Option("NX_DISABLE_BLOOM", "Bloom (experimental)", "Bloom (experimental)",
                 new String[] {"0", "1"},
                 new String[] {"Activado (normal)", "Desactivado"},
-                new String[] {"On (normal)", "Off"}, 0));
+                new String[] {"On (normal)", "Off"}, 1));
         options.add(new Option("NX_SHOW_FPS", "Contador de FPS", "FPS counter", new String[] {"0", "1"},
                 new String[] {"Desactivado", "Activado"}, new String[] {"Off", "On"}, 0));
         options.add(new Option("NX_TOUCH_SHOW", "Controles táctiles", "On-screen controls", new String[] {"1", "0"},
@@ -1057,8 +1057,13 @@ public class Launcher extends Activity {
         }
         for (String k : new String[] {"RENDER_SCALE", "NX_ANISO_MAX", "NX_LOD_BIAS"}) config.remove(k);
         final String preset = config.get("GRAPHICS");
-        if ("low".equals(preset)) config.put("NX_LOD_BIAS", "1");
-        else if ("medium".equals(preset)) config.put("NX_LOD_BIAS", "0.5");
+        if ("low".equals(preset)) {
+            config.put("NX_LOD_BIAS", "1");
+            if (!config.containsKey("NX_SHADOWS")) config.put("NX_SHADOWS", "0");
+            if (!config.containsKey("NX_DISABLE_BLOOM")) config.put("NX_DISABLE_BLOOM", "1");
+        } else if ("medium".equals(preset)) {
+            config.put("NX_LOD_BIAS", "0.5");
+        }
         writeConfig(new File(dataDir(), "config.txt"), config);
     }
 

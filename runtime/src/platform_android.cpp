@@ -101,7 +101,6 @@ struct ThreadStart {
 };
 
 static void* thread_entry(void* p) {
-    nx::plat::place_fast_cores();
     ThreadStart s = *static_cast<ThreadStart*>(p);
     delete static_cast<ThreadStart*>(p);
     s.fn(s.arg);
@@ -521,6 +520,7 @@ void crash(int sig, siginfo_t* info, void* uc) {
 }
 
 void game_thread(void*) {
+    nx::plat::place_fast_cores();
     try {
         nx::boot();
     } catch (const nx::LongJmp& j) {
@@ -762,7 +762,7 @@ extern "C" void android_main(android_app* app) {
 
     nx::log("%s (Switch recomp) on Android, data at %s (own folder %s: %s)", nx::game::kInfo.title, g_root.c_str(),
             own.c_str(), has_data(own) ? "has the data" : kDataProbe);
-    nx::plat::place_fast_cores();
+    nx::plat::place_little_cores();
     static bool started = false;
     for (;;) {
         int events;

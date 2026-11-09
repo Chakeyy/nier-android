@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include <nx/game.h>
 #include <nx/runtime.h>
 
 #include "platform.h"
@@ -217,6 +218,16 @@ void populate_sixaxis(uint64_t s) {
     st<float>(s + 0x14, -1.0f);         // acc.y (-1G)
     st<float>(s + 0x18, 0.0f);          // acc.z
 
+    // Identity rotation direction matrix (3x3 float matrix at 0x34..0x54)
+    st<float>(s + 0x34, 1.0f);          // direction.x = (1, 0, 0)
+    st<float>(s + 0x44, 1.0f);          // direction.y = (0, 1, 0)
+    st<float>(s + 0x54, 1.0f);          // direction.z = (0, 0, 1)
+
+    // In NieR:Automata, Joy-Con shake triggers "Shake to Evade" (barrel roll in flight,
+    // forward thrust in mech mode). Fake gyro from right stick causes continuous evade.
+    // Keep angular velocity, angle, and connection zeroed for NieR.
+    if (std::strcmp(game::kInfo.id, "nier") == 0) return;
+
     // Read current right-stick / gyro inputs to simulate motion aiming (e.g. Darts minigame)
     PadState p{};
     read_pad(p);
@@ -245,16 +256,15 @@ void populate_sixaxis(uint64_t s) {
     st<float>(s + 0x2c, angle_y);       // angle.y
     st<float>(s + 0x30, 0.0f);          // angle.z
 
-    // Rotation direction matrix (3x3 float matrix at 0x34..0x54)
-    st<float>(s + 0x34, 1.0f);          // direction.x = (1, 0, 0)
-    st<float>(s + 0x44, 1.0f);          // direction.y = (0, 1, 0)
-    st<float>(s + 0x54, 1.0f);          // direction.z = (0, 0, 1)
-
     // Attributes at 0x58: bit 0 = IsConnected, bit 1 = IsInterpolated
     st<uint32_t>(s + 0x58, 1);
 }
 
 void GetSixAxisSensorHandles(CPU& c) {
+    if (std::strcmp(game::kInfo.id, "nier") == 0) {
+        c.x[0] = 0;
+        return;
+    }
     uint64_t out = c.x[0];
     int32_t count = int32_t(c.x[1]);
     if (out && count > 0) {

@@ -72,6 +72,7 @@ static void report_threads() {
 }
 
 static void watchdog(void*) {
+    plat::place_little_cores();
     uint64_t last = 0, since = plat::monotonic_ns();
     bool reported = false;
     for (;;) {
@@ -158,6 +159,7 @@ static void dump_threads() {
 }
 
 static void stall_sampler(void*) {
+    plat::place_little_cores();
     static const char* dump_env = std::getenv("NX_THREAD_DUMP_AT");
     uint64_t dump_at = dump_env ? plat::monotonic_ns() + uint64_t(std::atof(dump_env) * 1e9) : 0;
     uint64_t last_frame = 0, since = plat::monotonic_ns();

@@ -13,7 +13,11 @@ namespace nx::plat {
 // profile, p5r_fps, watch/peek): a player's folder only holds the game data, the saves and config.txt. The log still
 // goes to the system log (Android logcat).
 #if defined(NX_RELEASE)
+#if defined(__ANDROID__)
+constexpr bool kDiagnostics = true;  // on Android keep nx.log available for launcher export
+#else
 constexpr bool kDiagnostics = false;
+#endif
 #else
 constexpr bool kDiagnostics = true;
 #endif
@@ -97,6 +101,7 @@ void gpu_turbo();  // NX_GPU_TURBO=1: the Adreno GPU at its highest clock (perf_
 void frame_thread_tick(int role);
 void frame_presented();  // after each present to the display
 void place_fast_cores();  // Pin current thread to performance/big cores (frame_stats.cpp; Android)
+void place_little_cores();  // Pin current thread to efficiency/little cores (frame_stats.cpp; Android)
 // Linux: asks power-profiles-daemon for its performance profile for as long as this process lives (frame_stats.cpp).
 void request_performance_profile();
 // Write watches (write_watch.cpp; page protection, POSIX): add fails when unsupported or full; take re-arms and
