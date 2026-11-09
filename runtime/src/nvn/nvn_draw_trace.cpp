@@ -784,6 +784,16 @@ void trace_compute_once(const ShaderInfo* cs, uint32_t x, uint32_t y, uint32_t z
 // Debug overrides of a draw's fragment shader; false: drop the draw.
 bool debug_shader_overrides(const std::vector<const ShaderInfo*>*& shaders, const ShaderInfo*& fs,
                             std::vector<const ShaderInfo*>& swapped) {
+    // In low graphics mode or with NX_PRUNE_POST=1, prune known heavy full-screen post-processing quads
+    // like fs f1f497acfa4a9eb3 (atmospheric fog / 2,100 particle quad taking ~8.6 ms on mobile GPUs)
+    static const bool prune_post = [] {
+        const char* p = std::getenv("NX_PRUNE_POST");
+        if (p) return p[0] == '1' || std::strcmp(p, "true") == 0;
+        const char* g = std::getenv("GRAPHICS");
+        return g && std::strcmp(g, "low") == 0;
+    }();
+    if (prune_post && fs && fs->hash.starts_with("f1f497")) return false;
+
     // NX_SWAP_FS=<from>:<to>: draws with fragment shader <from> use <to> instead (loaded already), to see what a
     // shader's geometry covers or what its textures hold.
     static const std::string swap = std::getenv("NX_SWAP_FS") ? std::getenv("NX_SWAP_FS") : "";

@@ -18,6 +18,8 @@ namespace nx {
 const game::Info game::kInfo = {"nier", "NieR Automata", 0x010056B015FE8000ull, "io.github.nierrecomp",
                                 "private/nier", 0x1000000 /* main.npdm META +0x14 */, "3C10EC35C5EF4C36" /* 1.0.3 */};
 
+static constexpr const char* kPerfBuildTag = "universal-fix";
+
 namespace {
 
 // Copy every fputs line into the log (assertion messages), then do the real one.
@@ -98,11 +100,20 @@ void update_hook(CPU& c) {
     const uint64_t timer = c.x[0];
     const bool adaptive = uint32_t(c.x[1]) != 0;
     resolution_floor();
+    // Synchronize presenter interval and mode directly every frame (bypasses unhookable ADRP at main+9bf1d0)
+    if (const uint64_t presenter = g_main ? ld<uint64_t>(g_main + 0x12c1c48) : 0) {
+        const uint32_t want_mode = target_fps() >= 60 ? 0 : 1;
+        st<uint32_t>(presenter + 0x504, want_mode);
+        const uint64_t device = ld<uint64_t>(presenter);
+        const uint32_t want_interval = target_fps() >= 60 ? 1 : 2;
+        if (device && ld<uint32_t>(device + 0x9c160) != want_interval)
+            st<uint32_t>(presenter + 0x508, 0xFFFFFFFFu);
+    }
     call(c, g_update);
     static const char* fixed = std::getenv("NX_NIER_STEP");
     static const float max_step = [] {
         const char* e = std::getenv("NX_NIER_MAX_STEP");
-        float v = e ? float(std::atof(e)) : 4.0f;
+        float v = e ? float(std::atof(e)) : 6.0f;
         return std::clamp(v, 2.0f, 8.0f);
     }();
     auto get = [&](uint64_t off) { uint32_t u = ld<uint32_t>(timer + off); float f; std::memcpy(&f, &u, 4); return f; };
@@ -144,21 +155,30 @@ void game::renderer_start() {}
 void game::first_frame() {}
 
 void game::after_init() {
+    log("nier: low-end build revision %s", kPerfBuildTag);
     // Dynamic resolution: the engine lowers its 3D resolution (1280x720 down to 1056x594 in handheld mode) from the
     // GPU times its timestamp counters measure. Those are the replay's unless the runtime feeds it the GPU's own
     // (runtime nvn_gpu_busy.cpp, PROGRESO 27). config.txt NX_GPU_TIME_FEED=0 turns it off.
 #if defined(_WIN32)
     if (!std::getenv("NX_GPU_TIME_FEED")) _putenv_s("NX_GPU_TIME_FEED", "1");
+    if (!std::getenv("NX_IMAGE_STORAGE")) _putenv_s("NX_IMAGE_STORAGE", "0");
 #else
     setenv("NX_GPU_TIME_FEED", "1", 0);
+    setenv("NX_IMAGE_STORAGE", "0", 0);
+#if defined(__ANDROID__)
+    // Mobile stability defaults if unset
+    if (!std::getenv("NX_MEM_LIMIT_GB")) setenv("NX_MEM_LIMIT_GB", "6.0", 0);
+    if (!std::getenv("NX_PIPELINED_NO_SPLIT")) setenv("NX_PIPELINED_NO_SPLIT", "1", 0);
+    if (!std::getenv("NX_CHUNK_IN_PASS")) setenv("NX_CHUNK_IN_PASS", "0", 0);
+    if (!std::getenv("NX_NIER_MAX_STEP")) setenv("NX_NIER_MAX_STEP", "6.0", 0);
+#endif
 #endif
     const LoadedModule* m = module_at(find_symbol("nnMain"));
     if (!m) return;
     g_main = m->base;
     g_vsync_setter = hook_function(m->base + 0x9bf1d0, vsync_hook);
     g_update = hook_function(m->base + 0x8fc7a8, update_hook);
-    if (!g_vsync_setter || !g_update) log("nier: frame-rate hooks not installed (%llx %llx)", (unsigned long long)g_vsync_setter,
-                                          (unsigned long long)g_update);
+    if (!g_update) log("nier: update hook not installed (%llx)", (unsigned long long)g_update);
     if (!(g_mesh_draw = hook_function(m->base + 0x9d514c, mesh_draw_hook))) log("nier: mesh draw hook not installed");
 }
 

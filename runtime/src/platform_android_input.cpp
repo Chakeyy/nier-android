@@ -225,14 +225,29 @@ int32_t on_input(android_app*, AInputEvent* e) {
         g_gamepad = false;
         size_t drawn = 0;
         touch_buttons(drawn);
+        bool has_left = false, has_right = false;
+        for (const auto& t : g_touches) {
+            if (t.stick == kLeftStick) has_left = true;
+            if (t.stick == kRightStick) has_right = true;
+        }
         if (drawn) {  // a drawn layout (touch_layout.cpp): its buttons first, the rest of the left half is the stick
             uint64_t b = touch_hit(x / g_w, y / g_h, g_w / g_h);
             bool left = !b && touch_stick_side(x / g_w);
-            Stick stick = b ? kNoStick : left ? kLeftStick : touch_right_stick() ? kRightStick : kNoStick;
-            if (b || stick) g_touches.push_back({AMotionEvent_getPointerId(e, index), x, y, x, y, stick, b, now});
+            Stick stick = b ? kNoStick : (left && !has_left) ? kLeftStick : (touch_right_stick() && !has_right) ? kRightStick : kNoStick;
+            float x0 = x, y0 = y;
+            if (stick == kLeftStick) {
+                float sx, sy, sr;
+                touch_stick_rest(sx, sy, sr);
+                float rx = sx * g_w, ry = sy * g_h, rr = sr * g_h * 1.5f;
+                if (std::hypot(x - rx, y - ry) <= rr) {
+                    x0 = rx, y0 = ry;  // snap anchor to drawn resting ring center
+                }
+            }
+            if (b || stick) g_touches.push_back({AMotionEvent_getPointerId(e, index), x0, y0, x, y, stick, b, now});
         } else {
             bool left = x < g_w * 0.5f;
-            g_touches.push_back({AMotionEvent_getPointerId(e, index), x, y, x, y, left ? kLeftStick : kNoStick,
+            Stick stick = (left && !has_left) ? kLeftStick : kNoStick;
+            g_touches.push_back({AMotionEvent_getPointerId(e, index), x, y, x, y, stick,
                                  left ? 0 : touch_button(x, y), now});
         }
     } else if (kind == AMOTION_EVENT_ACTION_UP || kind == AMOTION_EVENT_ACTION_POINTER_UP ||
@@ -247,7 +262,18 @@ int32_t on_input(android_app*, AInputEvent* e) {
                                        }),
                         g_touches.end());
     } else if (kind == AMOTION_EVENT_ACTION_MOVE) {
-        for (size_t k = 0; k < AMotionEvent_getPointerCount(e); k++) {
+        size_t count = AMotionEvent_getPointerCount(e);
+        // Prune any phantom touches whose pointers were lifted without an explicit POINTER_UP
+        g_touches.erase(std::remove_if(g_touches.begin(), g_touches.end(),
+                                       [&](const Touch& t) {
+                                           for (size_t k = 0; k < count; k++) {
+                                               if (AMotionEvent_getPointerId(e, k) == t.id) return false;
+                                           }
+                                           release_touch(t, now);
+                                           return true;
+                                       }),
+                        g_touches.end());
+        for (size_t k = 0; k < count; k++) {
             int32_t id = AMotionEvent_getPointerId(e, k);
             for (auto& t : g_touches)
                 if (t.id == id) {
@@ -280,19 +306,32 @@ void read_pad(PadState& p) {
     g_latched.erase(std::remove_if(g_latched.begin(), g_latched.end(), [&](const Latch& l) { return now >= l.until_ns; }),
                     g_latched.end());
     for (const auto& l : g_latched) p.buttons |= l.button;
-    for (const auto& t : g_touches) {
-        float dx = (t.x - t.x0) / radius, dy = (t.y - t.y0) / radius;
+    for (auto& t : g_touches) {
+        float dist = std::hypot(t.x - t.x0, t.y - t.y0);
+        if (dist > radius) {
+            float excess = dist - radius;
+            t.x0 += ((t.x - t.x0) / dist) * excess;
+            t.y0 += ((t.y - t.y0) / dist) * excess;
+        }
+        constexpr float kDeadzone = 0.08f;
+        float dist_norm = dist / radius;
+        float dx = 0.0f, dy = 0.0f;
+        if (dist_norm > kDeadzone) {
+            float scaled = (dist_norm - kDeadzone) / (1.0f - kDeadzone);
+            dx = ((t.x - t.x0) / dist) * scaled;
+            dy = ((t.y - t.y0) / dist) * scaled;
+        }
         if (t.stick == kLeftStick) {
-            float sx = dx * stick_sens();
-            float sy = -dy * stick_sens();
+            float sx = dx * stick_sens() * 1.25f;
+            float sy = -dy * stick_sens() * 1.25f;
             p.lx = int32_t(std::clamp(sx, -1.f, 1.f) * kStickMax);
             p.ly = int32_t(std::clamp(sy, -1.f, 1.f) * kStickMax);
             // A drawn layout's stick pushed nearly all the way may hold a button too (Wonder: Y, dash), so running
             // needs no second thumb on the right side.
             if (drawn && std::abs(dx) > 0.85f) p.buttons |= touch_stick_full_button();
         } else if (t.stick == kRightStick) {
-            float sx = dx * camera_sens();
-            float sy = -dy * camera_sens();
+            float sx = dx * camera_sens() * 1.15f;
+            float sy = -dy * camera_sens() * 1.15f;
             p.rx = int32_t(std::clamp(sx, -1.f, 1.f) * kStickMax);
             p.ry = int32_t(std::clamp(sy, -1.f, 1.f) * kStickMax);
         } else {

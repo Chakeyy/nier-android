@@ -4,9 +4,9 @@
      which needs all-files access: prepared on the phone once (ImportActivity) from the player's own base game, update
      1.0.3 and keys, or copied there from the PC (the same layout as private/nier). -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="io.github.nierrecomp"
-    android:versionCode="2"
-    android:versionName="0.2.0">
+    package="io.github.nierrecomp.perf"
+    android:versionCode="11"
+    android:versionName="0.2.0-fix">
 
     <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
@@ -18,7 +18,7 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
 
     <application
-        android:label="NieR Automata"
+        android:label="NieR (Perf)"
         android:requestLegacyExternalStorage="true"
         android:hasCode="true"
         android:extractNativeLibs="true"
@@ -29,7 +29,8 @@
         android:theme="@style/Fullscreen">
         <!-- Home screen: data check, options (config.txt), saves, mods, then the game. -->
         <activity
-            android:name=".Launcher"
+            android:name="io.github.nierrecomp.Launcher"
+            android:label="NieR (Perf)"
             android:exported="true"
             android:theme="@android:style/Theme.Material.NoActionBar"
             android:screenOrientation="sensorLandscape">
@@ -40,7 +41,7 @@
         </activity>
         <!-- Where the on-screen controls go (NX_TOUCH_LAYOUT), full screen like the game. -->
         <activity
-            android:name=".ControlsEditor"
+            android:name="io.github.nierrecomp.ControlsEditor"
             android:exported="false"
             android:theme="@style/Fullscreen"
             android:screenOrientation="sensorLandscape"
@@ -48,22 +49,23 @@
         <!-- The game. Exported: test runs can start it directly with adb. -->
         <activity
             android:name="android.app.NativeActivity"
+            android:label="NieR (Perf)"
             android:exported="true"
             android:screenOrientation="sensorLandscape"
             android:resizeableActivity="false"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density">
             <meta-data android:name="android.app.lib_name" android:value="nier" />
         </activity>
-            <provider
-            android:name=".LogProvider"
-            android:authorities="io.github.nierrecomp.logprovider"
+        <provider
+            android:name="io.github.nierrecomp.LogProvider"
+            android:authorities="io.github.nierrecomp.perf.logprovider"
             android:exported="false"
             android:grantUriPermissions="true" />
         <!-- Prepares the game once: writes the base game with update 1.0.3 to the data folder and translates its shaders
              (libnierimport.so with libspirvharness.so, the shader translator). Its own process, so the translator's
              runtime never shares the game's. -->
         <activity
-            android:name=".ImportActivity"
+            android:name="io.github.nierrecomp.ImportActivity"
             android:exported="false"
             android:process=":import"
             android:theme="@android:style/Theme.Material.NoActionBar"

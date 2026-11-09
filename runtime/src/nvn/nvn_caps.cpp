@@ -98,9 +98,10 @@ bool native_r11g11b10() {
     if (s >= 0) return s == 1;
 #if defined(__ANDROID__)
     if (!vk_physical()) return false;  // asked before the device exists: not decided yet
-    // Mali GPUs produce NaNs and green/purple flickering with B10G11R11_UFLOAT; keep RGBA16F
-    if (is_mali()) {
-        log("nvn/vk: Mali GPU detected: R11G11B10F kept as RGBA16F to prevent green/purple flickering and bloom overexposure");
+    // Mali, Adreno 6xx, and Turnip produce NaNs, bloom overexposure, and severe colorful blocky artifacts with B10G11R11_UFLOAT; keep RGBA16F
+    if (is_mali() || is_adreno_6xx_or_older() || is_turnip()) {
+        log("nvn/vk: %s GPU detected: R11G11B10F kept as RGBA16F to prevent green/purple flickering, bloom artifacts and NaN corruption",
+            is_turnip() ? "Turnip" : is_mali() ? "Mali" : "Adreno 6xx");
         state.store(0, std::memory_order_release);
         return false;
     }
@@ -148,10 +149,18 @@ bool native_d24s8() {
 bool ubwc_flags() {
     static const bool on = [] {
         const char* e = std::getenv("NX_UBWC_FLAGS");
+        if (e) return e[0] == '1';
 #if defined(__ANDROID__)
-        return !(e && e[0] == '0');
+        // Adreno 6xx and Turnip driver have UBWC tile decompression corruption with format lists / render targets.
+        // Disable UBWC flags (reverting to safe MUTABLE_FORMAT on all colour images) to prevent colorful block artifacts.
+        if (is_adreno_6xx_or_older() || is_turnip()) {
+            log("nvn/vk: %s detected: UBWC format lists disabled to prevent compression tile artifacts",
+                is_turnip() ? "Turnip" : "Adreno 6xx");
+            return false;
+        }
+        return true;
 #else
-        return e && e[0] == '1';
+        return false;
 #endif
     }();
     return on;

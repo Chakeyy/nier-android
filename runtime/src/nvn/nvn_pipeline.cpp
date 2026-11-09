@@ -181,7 +181,8 @@ bool identity(const VkComponentMapping& m) {
 // height 1, since the translator samples them as 2D, G8). A shader declaring another shape than the texture it gets
 // (a samplerCube given a 2D texture) reads the dummy instead: Metal aborts on the view.
 bool view_compatible(const GpuImage& img, VkImageViewType type, uint32_t layers) {
-    bool cube_img = img.view_type == VK_IMAGE_VIEW_TYPE_CUBE || img.view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+    bool cube_img = img.view_type == VK_IMAGE_VIEW_TYPE_CUBE || img.view_type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY ||
+                    img.cube_compat || (img.view_type == VK_IMAGE_VIEW_TYPE_2D_ARRAY && img.width == img.height && img.layers >= 6);
     bool img3d = img.view_type == VK_IMAGE_VIEW_TYPE_3D;
     bool img1d = img.view_type == VK_IMAGE_VIEW_TYPE_1D || img.view_type == VK_IMAGE_VIEW_TYPE_1D_ARRAY;
     switch (type) {
@@ -208,11 +209,25 @@ VkImageView view_of(GpuImage& img, VkImageViewType type, const ViewInfo& view) {
     uint32_t base = std::min(view.base_level, img.levels - 1);
     uint32_t levels = view.levels ? std::min(view.levels, img.levels - base) : img.levels - base;
     uint32_t min_layer = std::min(view.min_layer, img.layers - 1);
-    bool whole = base == 0 && levels == img.levels && min_layer == 0 && (!view.layers || view.layers == img.layers);
+    uint32_t layers = std::min(view.layers ? view.layers : img.layers - min_layer, img.layers - min_layer);
+    if (type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_1D) layers = 1;
+    if (type == VK_IMAGE_VIEW_TYPE_CUBE) {
+        layers = 6;
+        if (min_layer + 6 > img.layers) min_layer = 0;
+        else min_layer -= min_layer % 6;
+    }
+    if (type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) {
+        layers -= layers % 6;
+        if (min_layer + layers > img.layers) min_layer = 0;
+        else min_layer -= min_layer % 6;
+    }
+    if (min_layer + layers > img.layers) return VK_NULL_HANDLE;
+    if (!view_compatible(img, type, layers)) return VK_NULL_HANDLE;
+    bool whole = base == 0 && levels == img.levels && min_layer == 0 && layers == img.layers;
     VkFormat format = view_format(img, view.format);
     if (type == img.view_type && identity(m) && whole && format == img.format) return img.view;
     auto& cache = g_sampled_views;
-    uint64_t range = uint64_t(base) | uint64_t(levels) << 16 | uint64_t(min_layer) << 32 | uint64_t(view.layers) << 48;
+    uint64_t range = uint64_t(base) | uint64_t(levels) << 16 | uint64_t(min_layer) << 32 | uint64_t(layers) << 48;
     uint32_t mapping = uint32_t(m.r) | uint32_t(m.g) << 8 | uint32_t(m.b) << 16 | uint32_t(m.a) << 24;
     SampledKey key{img.image, type, mapping, range, uint64_t(format)};
     uint64_t h = uintptr_t(img.image) >> 4 ^ range * 31 ^ mapping ^ uint64_t(type) << 5 ^ uint64_t(format);
@@ -225,16 +240,11 @@ VkImageView view_of(GpuImage& img, VkImageViewType type, const ViewInfo& view) {
         ci.viewType = type;
         ci.format = format;
         ci.components = m;
-        uint32_t layers = std::min(view.layers ? view.layers : img.layers - min_layer, img.layers - min_layer);
-        if (type == VK_IMAGE_VIEW_TYPE_2D || type == VK_IMAGE_VIEW_TYPE_1D) layers = 1;
-        if (type == VK_IMAGE_VIEW_TYPE_CUBE) layers = 6;
-        if (type == VK_IMAGE_VIEW_TYPE_CUBE_ARRAY) layers -= layers % 6;
-        if (!view_compatible(img, type, layers)) return VK_NULL_HANDLE;
         ci.subresourceRange = {img.aspect == (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
                                    ? VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT)
                                    : img.aspect,
                                base, levels, min_layer, layers};
-        if (p_vkCreateImageView(vk_device(), &ci, nullptr, &v) != VK_SUCCESS) v = img.view;
+        if (p_vkCreateImageView(vk_device(), &ci, nullptr, &v) != VK_SUCCESS) return VK_NULL_HANDLE;
     }
     if (v) hit = {key, v};  // never a null one: those are tried again
     return v;

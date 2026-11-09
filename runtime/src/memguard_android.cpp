@@ -45,12 +45,36 @@ uint64_t smaps_pss_bytes() {
 }
 
 uint64_t statm_resident_bytes() {
-    FILE* f = std::fopen("/proc/self/statm", "r");
+    // Unevictable footprint (RssAnon + VmSwap): clean CPK file cache (RssFile) is droppable by the OS
+    // and must not be counted against the process limit.
+    FILE* f = std::fopen("/proc/self/status", "r");
+    if (f) {
+        char line[256];
+        uint64_t anon_kb = 0, swap_kb = 0;
+        bool has_anon = false, has_swap = false;
+        while (std::fgets(line, sizeof line, f)) {
+            if (!has_anon && std::strncmp(line, "RssAnon:", 8) == 0) {
+                anon_kb = std::strtoull(line + 8, nullptr, 10);
+                has_anon = true;
+                if (has_swap) break;
+            } else if (!has_swap && std::strncmp(line, "VmSwap:", 7) == 0) {
+                swap_kb = std::strtoull(line + 7, nullptr, 10);
+                has_swap = true;
+                if (has_anon) break;
+            }
+        }
+        std::fclose(f);
+        if (has_anon) return (anon_kb + swap_kb) << 10;
+    }
+    f = std::fopen("/proc/self/statm", "r");
     if (!f) return 0;
-    unsigned long long size = 0, resident = 0;
-    if (std::fscanf(f, "%llu %llu", &size, &resident) != 2) resident = 0;
+    unsigned long long size = 0, resident = 0, shared = 0;
+    int n = std::fscanf(f, "%llu %llu %llu", &size, &resident, &shared);
     std::fclose(f);
-    return uint64_t(resident) * uint64_t(sysconf(_SC_PAGESIZE));
+    if (n < 2) return 0;
+    unsigned long long unevictable = (n >= 3 && resident >= shared) ? (resident - shared) : resident;
+    static const uint64_t page_size = sysconf(_SC_PAGESIZE);
+    return uint64_t(unevictable) * page_size;
 }
 
 // Cheap counters (no page-table walk): VmSwap/RssAnon/RssFile from /proc/self/status, MemAvailable/SwapFree from
@@ -92,7 +116,7 @@ void start_memory_guard() {
     const char* e = std::getenv("NX_MEM_LIMIT_GB");
     double ram = double(sysconf(_SC_PHYS_PAGES)) * double(sysconf(_SC_PAGESIZE)) / double(1ull << 30);
     double gb = e ? std::atof(e) : 0.0;
-    if (gb <= 0) gb = ram > 0 ? ram * 0.6 : 6.0;
+    if (gb <= 0) gb = ram >= 7.0 ? 6.0 : (ram > 0 ? ram * 0.6 : 6.0);
     const uint64_t limit = uint64_t(gb * double(1ull << 30));
     const char* m = std::getenv("NX_MEMGUARD");
     const std::string mode = m ? m : "statm";
@@ -104,8 +128,18 @@ void start_memory_guard() {
     std::thread([limit, gb, mode] {
         uint64_t ticks = 0, peak = 0, read_ns = 0, read_max = 0;
         bool smaps = mode == "smaps" || mode == "ab";
+        uint64_t cur_limit = limit;
+        double cur_gb = gb;
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            if (const char* env = std::getenv("NX_MEM_LIMIT_GB")) {
+                double env_gb = std::atof(env);
+                if (env_gb > 0 && env_gb != cur_gb) {
+                    cur_gb = env_gb;
+                    cur_limit = uint64_t(cur_gb * double(1ull << 30));
+                    log("memory: guard limit updated to %.1f GB (NX_MEM_LIMIT_GB)", cur_gb);
+                }
+            }
             if (mode == "ab" && ticks && ticks % 160 == 0) {
                 smaps = !smaps;
                 log("memory: guard source %s -> %s", smaps ? "statm" : "smaps", smaps ? "smaps" : "statm");
@@ -120,8 +154,8 @@ void start_memory_guard() {
             if (f > peak) peak = f;
             if (++ticks % 120 == 0) {
                 log("memory: %.2f GB %s (peak %.2f GB, limit %.1f GB), read avg %.2f ms, max %.2f ms",
-                    double(f) / double(1ull << 30), smaps ? "Pss (smaps)" : "resident (statm)",
-                    double(peak) / double(1ull << 30), gb, double(read_ns) / 120e6, double(read_max) / 1e6);
+                    double(f) / double(1ull << 30), smaps ? "Pss (smaps)" : "unevictable (anon+swap)",
+                    double(peak) / double(1ull << 30), cur_gb, double(read_ns) / 120e6, double(read_max) / 1e6);
                 read_ns = read_max = 0;
                 log("memory: anon %llu MB, file %llu MB, swapped %llu MB (VmSwap) | system: MemAvailable %llu MB, SwapFree %llu MB",
                     (unsigned long long)(kb_field("/proc/self/status", "RssAnon:") >> 10),
@@ -130,9 +164,9 @@ void start_memory_guard() {
                     (unsigned long long)(kb_field("/proc/meminfo", "MemAvailable:") >> 10),
                     (unsigned long long)(kb_field("/proc/meminfo", "SwapFree:") >> 10));
             }
-            if (f > limit) {
+            if (f > cur_limit) {
                 log("memory: %.2f GB is over the %.1f GB limit (NX_MEM_LIMIT_GB): stopping",
-                    double(f) / double(1ull << 30), gb);
+                    double(f) / double(1ull << 30), cur_gb);
                 _exit(3);
             }
         }

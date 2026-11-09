@@ -34,6 +34,7 @@ struct GpuImage {
     // An R8 texture always read as (1, 1, 1, R) (a glyph cache): stored as RGBA8 (255, 255, 255, R) and sampled
     // without swizzle. MoltenVK returned alpha 0 for that view swizzle on a 2D-array view, so all text was invisible.
     bool alpha_from_r = false;
+    bool cube_compat = false;  // created with VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT
     uint32_t nvn_format = 0;  // the texture's NVN format
     bool uw = false;          // NX_ULTRAWIDE: a widened render target (nvn_ultrawide.cpp)
     bool hud = false;         // NX_HUD_1080: a 1280x720 render target made at 1920x1080 or 1600x900 (hud_1080_texture)
@@ -61,6 +62,7 @@ const VkPhysicalDeviceFeatures& vk_features();
 bool is_xclipse();
 bool is_mali();
 bool is_adreno();
+bool is_turnip();
 bool is_adreno_8xx();
 bool is_adreno_6xx_or_older();
 bool gpu_require_subgroup32();  // compute pipelines pin the subgroup size to 32 (nvn_pipeline.cpp)
@@ -341,7 +343,7 @@ void janitor_wait(const std::atomic<bool>& done);
 bool gpu_busy_on();
 void gpu_busy_part_begin(uint32_t slot, uint32_t part, VkCommandBuffer cb);
 void gpu_busy_part_end(uint32_t slot, uint32_t part, VkCommandBuffer cb);
-void gpu_busy_retired(uint32_t slot, uint32_t queued, bool replay, uint64_t replay_ns);
+void gpu_busy_retired(uint32_t slot, uint64_t queued, bool replay, uint64_t replay_ns);
 // NX_GPU_TIME_FEED=1: the GPU's measured time per replayed frame over the replay's own length (EMA, 0.05..8; 1 when
 // off or not measured yet). The counter reports' timestamps advance at that rate (nvn_draw_state.cpp), so an engine
 // that sizes its dynamic resolution from them sees the GPU's cost, not the replay's (NieR, PROGRESO 27).
@@ -366,6 +368,7 @@ int exp_render_pass();
 bool exp_no_write_backs();
 void gpu_profile_collect();
 void gpu_profile_log(uint64_t frames);
+uint64_t fence_timeout_ns();  // nvn_frames.cpp
 
 namespace replay {
 void dedup_reset();  // nvn_dedup.cpp

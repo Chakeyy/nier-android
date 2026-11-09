@@ -56,7 +56,7 @@ import java.util.Map;
  *   frame rate  30 (NX_FPS_CAP=30, default: runtime nvn_queue.cpp holds the present interval at 2) or 60
  *   shadows     on (NX_SHADOWS=1, default) or off (0: runtime nvn_draw.cpp skips the draws into shadow maps)
  *   minimum dynamic resolution  NX_NIER_MIN_SCALE: how low the game's dynamic resolution may take its 3D when the GPU
- *               is behind, 0.5, 0.6 (default), 0.7 or 0.8333 (the game's own floor; games/nier/game.cpp)
+ *               is behind, 0.45, 0.5 (default), 0.6, 0.7 or 0.8333 (the game's own floor; games/nier/game.cpp)
  *   bloom       experimental: on (NX_DISABLE_BLOOM=0, default) or off (1: runtime nvn_draw.cpp skips every draw into a
  *               colour target's smaller mip levels, which is where bloom and blur chains go, and maybe other effects)
  *   FPS counter off (default) or on (NX_SHOW_FPS)

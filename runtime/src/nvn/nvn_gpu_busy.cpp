@@ -24,7 +24,7 @@ using namespace nx::vk;
 
 namespace {
 
-constexpr uint32_t kSlots = 8, kParts = 8;
+constexpr uint32_t kSlots = 8, kParts = 64;
 VkQueryPool g_pools[kSlots] = {};
 double g_period_ns = 1.0;
 double g_busy_ns = 0, g_span_ns = 0, g_present_ns = 0;  // present: the parts of submits that replay nothing
@@ -90,7 +90,7 @@ void gpu_busy_part_end(uint32_t slot, uint32_t part, VkCommandBuffer cb) {
     p_vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g_pools[slot], 2 * part + 1);
 }
 
-void gpu_busy_retired(uint32_t slot, uint32_t queued, bool replay, uint64_t replay_ns) {
+void gpu_busy_retired(uint32_t slot, uint64_t queued, bool replay, uint64_t replay_ns) {
     if (!gpu_busy_on() || slot >= kSlots || !g_pools[slot] || !queued) return;
     uint64_t first = UINT64_MAX, last = 0;
     double slot_ns = 0;

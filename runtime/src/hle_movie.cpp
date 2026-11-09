@@ -476,6 +476,7 @@ void DecoderGetOutputFormat(CPU& c) {
 // frames in, at ~15 fps until then). This guest thread drains every started codec every 2 ms and signals the event.
 void movie_pump_thread(CPU& c) {
     log("movie: pump thread running");
+    plat::place_little_cores();
     for (;;) {
         plat::sleep_ns(2'000'000);
         std::vector<uint64_t> events;

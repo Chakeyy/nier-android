@@ -39,9 +39,9 @@ struct Front {
     uint64_t generation = 0;
     Entry entry;
 };
-Front g_front[1024];
+Front g_front[4096];
 uint64_t g_generation = 1;
-Front& front_of(const uint8_t* p) { return g_front[(uintptr_t(p) >> 4 ^ uintptr_t(p) >> 14) & 1023]; }
+Front& front_of(const uint8_t* p) { return g_front[(uintptr_t(p) >> 4 ^ uintptr_t(p) >> 14) & 4095]; }
 
 // NX_UPLOAD_STATS: bytes copied per kind, and of those the bytes equal to the last copy of the same address and size.
 struct KindStats {

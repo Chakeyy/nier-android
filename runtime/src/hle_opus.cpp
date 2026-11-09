@@ -21,6 +21,7 @@
 #endif
 
 #include "ipc.h"
+#include "platform.h"
 
 namespace nx {
 
@@ -44,6 +45,7 @@ uint32_t be32(const uint8_t* p) { return uint32_t(p[0]) << 24 | uint32_t(p[1]) <
 
 // One packet from `in` into `out` (s16 interleaved). Returns false on a malformed input.
 bool decode(OpusState& s, IpcCtx& c, bool reset, bool perf) {
+    plat::place_little_cores();
     const Buffer in = c.in_buf(0), out = c.out_buf(0);
     if (!in.addr || in.size < 8) return false;
     const uint8_t* src = reinterpret_cast<const uint8_t*>(in.addr);

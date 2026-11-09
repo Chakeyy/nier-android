@@ -36,6 +36,7 @@ bool enabled() {
 
 void run() {
     plat::set_thread_name("nvn replay");
+    plat::place_fast_cores();
     for (;;) {
         std::pair<uint64_t, std::function<void()>> job;
         {

@@ -27,8 +27,10 @@
 extern char** environ;
 #endif
 #if defined(__ANDROID__)
+#include <cstring>
 #include <dlfcn.h>
 #include <sched.h>
+#include <sys/system_properties.h>
 #include <unistd.h>
 #endif
 
@@ -75,6 +77,13 @@ const Cpus& cpus() {
                     std::fclose(fp);
                 }
             }
+            if (f == 0) {
+                std::snprintf(path, sizeof path, "/sys/devices/system/cpu/cpu%ld/cpu_capacity", k);
+                if (FILE* fp = std::fopen(path, "r")) {
+                    if (std::fscanf(fp, "%ld", &f) != 1) f = 0;
+                    std::fclose(fp);
+                }
+            }
             freq.push_back(f);
         }
         std::vector<long> distinct = freq;
@@ -89,6 +98,18 @@ const Cpus& cpus() {
         } else if (n >= 4) {
             // SELinux blocked cpufreq sysfs access: fall back to standard ARM big.LITTLE / DynamIQ topology
             x.cluster.clear();
+#if defined(__ANDROID__)
+            char prop[PROP_VALUE_MAX] = {};
+            __system_property_get("ro.board.platform", prop);
+            if (!prop[0]) __system_property_get("ro.hardware", prop);
+            bool is_6_plus_2 = (std::strstr(prop, "6789") != nullptr ||
+                                std::strstr(prop, "mt6789") != nullptr ||
+                                std::strstr(prop, "g99") != nullptr);
+            if (n == 8 && is_6_plus_2) {
+                x.cluster = {0, 0, 0, 0, 0, 0, 1, 1};
+                x.clusters = 2;
+            } else
+#endif
             if (n == 8) {
                 x.cluster = {0, 0, 0, 0, 1, 1, 1, 2};
                 x.clusters = 3;
@@ -198,6 +219,20 @@ void place_fast_cores() {
     CPU_ZERO(&set);
     for (size_t k = 0; k < c.cluster.size(); k++) {
         if (c.cluster[k] > 0) CPU_SET(int(k), &set);
+    }
+    sched_setaffinity(0, sizeof set, &set);
+#endif
+}
+
+void place_little_cores() {
+#if defined(__ANDROID__)
+    const Cpus& c = cpus();
+    int mode = affinity_mode();
+    if (!mode || c.clusters < 2) return;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    for (size_t k = 0; k < c.cluster.size(); k++) {
+        if (c.cluster[k] == 0) CPU_SET(int(k), &set);
     }
     sched_setaffinity(0, sizeof set, &set);
 #endif
