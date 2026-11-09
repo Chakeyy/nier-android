@@ -1,0 +1,86 @@
+name: Build NieR Android APK
+
+on:
+  push:
+    branches:
+      - 'perf/**'
+      - 'fix/**'
+      - 'ci/**'
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build NieR APK (NCE arm64-v8a)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build cmake zip unzip
+
+      - name: Install Android NDK 28 & Build Tools 35
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install \
+            "ndk;28.2.13676358" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Fetch Vulkan Headers
+        run: |
+          git clone --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git /tmp/vulkan-headers
+          mkdir -p /tmp/vulkan-headers/Include
+          cp -r /tmp/vulkan-headers/include/* /tmp/vulkan-headers/Include/
+          echo "VULKAN_SDK=/tmp/vulkan-headers" >> $GITHUB_ENV
+
+      - name: Extract Shader Translator (libspirvharness.so)
+        run: |
+          mkdir -p private/build/spirv_harness_android_nier
+          curl -sSL -L "https://github.com/Brandon04Gonzalez/nier-android/releases/download/v0.2.0/nier.apk" -o /tmp/nier_v020.apk
+          unzip -p /tmp/nier_v020.apk lib/arm64-v8a/libspirvharness.so > private/build/spirv_harness_android_nier/libspirvharness.so
+          chmod +x private/build/spirv_harness_android_nier/libspirvharness.so
+
+      - name: Build NieR APK
+        run: |
+          chmod +x android/build_apk.sh
+          bash android/build_apk.sh --game nier --nce --release
+
+      - name: Package Artifact
+        id: prep
+        run: |
+          REF_NAME="${GITHUB_REF_NAME:-$(git rev-parse --abbrev-ref HEAD)}"
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          DATE=$(date +'%Y%m%d')
+          SLUG=$(echo "${REF_NAME}" | sed 's|perf/||; s|fix/||; s|ci/||; s|android-||; s|/|-|g')
+          PERF_TAG=$(sed -n 's/.*kPerfBuildTag = "\([^"]*\)".*/\1/p' games/nier/game.cpp | head -n 1)
+          if [ -z "${PERF_TAG}" ]; then
+            REV_COUNT=$(git rev-list --count 7eac366..HEAD 2>/dev/null || echo "1")
+            PERF_TAG="r${REV_COUNT}"
+          fi
+          BASE_NAME="nier-v0.2.0-${SLUG}-${PERF_TAG}-${DATE}-${SHORT_SHA}"
+          APK_NAME="${BASE_NAME}.apk"
+          cp private/nier/apk_nce/nier.apk "${APK_NAME}"
+          ls -lh "${APK_NAME}"
+          echo "apk_name=${APK_NAME}" >> $GITHUB_OUTPUT
+          echo "artifact_name=${BASE_NAME}" >> $GITHUB_OUTPUT
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.prep.outputs.artifact_name }}
+          path: ${{ steps.prep.outputs.apk_name }}
