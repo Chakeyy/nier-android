@@ -45,12 +45,35 @@ uint64_t smaps_pss_bytes() {
 }
 
 uint64_t statm_resident_bytes() {
-    FILE* f = std::fopen("/proc/self/statm", "r");
+    // Unevictable footprint (RssAnon + VmSwap): clean CPK file cache (RssFile) is droppable by the OS
+    // and must not be counted against the process limit.
+    FILE* f = std::fopen("/proc/self/status", "r");
+    if (f) {
+        char line[256];
+        uint64_t anon_kb = 0, swap_kb = 0;
+        bool has_anon = false, has_swap = false;
+        while (std::fgets(line, sizeof line, f)) {
+            if (!has_anon && std::strncmp(line, "RssAnon:", 8) == 0) {
+                anon_kb = std::strtoull(line + 8, nullptr, 10);
+                has_anon = true;
+                if (has_swap) break;
+            } else if (!has_swap && std::strncmp(line, "VmSwap:", 7) == 0) {
+                swap_kb = std::strtoull(line + 7, nullptr, 10);
+                has_swap = true;
+                if (has_anon) break;
+            }
+        }
+        std::fclose(f);
+        if (has_anon) return (anon_kb + swap_kb) << 10;
+    }
+    f = std::fopen("/proc/self/statm", "r");
     if (!f) return 0;
-    unsigned long long size = 0, resident = 0;
-    if (std::fscanf(f, "%llu %llu", &size, &resident) != 2) resident = 0;
+    unsigned long long size = 0, resident = 0, shared = 0;
+    int n = std::fscanf(f, "%llu %llu %llu", &size, &resident, &shared);
     std::fclose(f);
-    return uint64_t(resident) * uint64_t(sysconf(_SC_PAGESIZE));
+    if (n < 2) return 0;
+    unsigned long long unevictable = (n >= 3 && resident >= shared) ? (resident - shared) : resident;
+    return uint64_t(unevictable) * uint64_t(sysconf(_SC_PAGESIZE));
 }
 
 // Cheap counters (no page-table walk): VmSwap/RssAnon/RssFile from /proc/self/status, MemAvailable/SwapFree from
@@ -120,7 +143,7 @@ void start_memory_guard() {
             if (f > peak) peak = f;
             if (++ticks % 120 == 0) {
                 log("memory: %.2f GB %s (peak %.2f GB, limit %.1f GB), read avg %.2f ms, max %.2f ms",
-                    double(f) / double(1ull << 30), smaps ? "Pss (smaps)" : "resident (statm)",
+                    double(f) / double(1ull << 30), smaps ? "Pss (smaps)" : "unevictable (anon+swap)",
                     double(peak) / double(1ull << 30), gb, double(read_ns) / 120e6, double(read_max) / 1e6);
                 read_ns = read_max = 0;
                 log("memory: anon %llu MB, file %llu MB, swapped %llu MB (VmSwap) | system: MemAvailable %llu MB, SwapFree %llu MB",

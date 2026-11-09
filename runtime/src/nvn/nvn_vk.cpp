@@ -329,7 +329,7 @@ bool init() {
     // spills bigger uploads to staging buffers in proportion to the ring).
     {
 #if defined(__ANDROID__)
-        uint64_t ring_mb = 64;
+        uint64_t ring_mb = 256;  // 256 MB matches desktop; avoids ring exhaustion on heavy scene transitions (e.g. factory prologue burst)
 #else
         uint64_t ring_mb = 256;
 #endif
@@ -616,10 +616,10 @@ void end_and_wait(VkSemaphore wait, VkSemaphore signal) {
     p_vkResetFences(g_device, 1, &g_fence);
     bool queued = check(p_vkQueueSubmit(g_queue, 1, &si, g_fence), "vkQueueSubmit");
     uint64_t t1 = plat::monotonic_ns();
-    // 2 s at most: a frame's work takes milliseconds; longer is a shader that does not end.
+    // 5 s at most: a frame's work takes milliseconds; longer is a shader that does not end (5 s allows heavy mobile scene loads).
     if (queued) {
-        VkResult w = p_vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 2'000'000'000ull);
-        if (w == VK_TIMEOUT) gpu_hung("a submit did not finish in 2 s");
+        VkResult w = p_vkWaitForFences(g_device, 1, &g_fence, VK_TRUE, 5'000'000'000ull);
+        if (w == VK_TIMEOUT) gpu_hung("a submit did not finish in 5 s");
         check(w, "vkWaitForFences");
         gpu_busy_retired(0, 1, g_cb_replay, g_cb_replay ? t0 - g_cb_begin_ns : 0);
     }

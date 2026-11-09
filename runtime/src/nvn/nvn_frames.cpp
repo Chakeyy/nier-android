@@ -63,7 +63,7 @@ namespace {
 
 constexpr uint32_t kMaxSlots = 8;
 constexpr uint32_t kMaxParts = 8;  // command buffers per submit: chunks, the split, the last part
-constexpr uint64_t kFenceTimeout = 2'000'000'000ull;  // a frame's work takes milliseconds; longer is a hung shader
+constexpr uint64_t kFenceTimeout = 5'000'000'000ull;  // a frame's work takes milliseconds; longer is a hung shader
 
 struct Slot {
     VkCommandPool pool = VK_NULL_HANDLE;  // its own (the parts reset together), unless NX_CB_RESET=1
@@ -171,7 +171,7 @@ void wait_fences(const VkFence* fences, uint32_t n) {
     if (!n) return;
     uint64_t t0 = plat::monotonic_ns();
     VkResult r = p_vkWaitForFences(vk_device(), n, fences, VK_TRUE, kFenceTimeout);
-    if (r == VK_TIMEOUT) gpu_hung("a submit did not finish in 2 s");
+    if (r == VK_TIMEOUT) gpu_hung("a submit did not finish in 5 s");
     if (r == VK_ERROR_DEVICE_LOST) gpu_hung("vkWaitForFences");
     if (r != VK_SUCCESS) log("nvn/vk: vkWaitForFences failed (%d)", int(r));
     g_times.fence_ns += plat::monotonic_ns() - t0;
@@ -450,9 +450,10 @@ void frame_init(VkCommandPool pool, uint32_t family, VkBuffer ring, uint8_t* rin
 #if defined(__ANDROID__)
     if (std::getenv("NX_SUBMIT_CHUNK_DRAWS")) {
         g_chunk_draws = uint64_t(env_int("NX_SUBMIT_CHUNK_DRAWS"));
-    } else if (is_adreno_8xx()) {
-        g_chunk_draws = 0;  // Adreno 8xx driver bug: chunked submissions hang the GPU during battle passes
-        log("nvn/vk: Adreno 8xx GPU detected: chunk submits disabled to prevent GPU hang");
+    } else if (is_mali() || is_xclipse() || is_adreno_8xx()) {
+        g_chunk_draws = 0;  // Mali / Xclipse / Adreno 8xx: chunked submissions hang or stall TBDR GPU drivers
+        log("nvn/vk: %s GPU detected: chunk submits disabled to prevent GPU hang",
+            is_mali() ? "Mali" : is_xclipse() ? "Xclipse" : "Adreno 8xx");
     } else {
         g_chunk_draws = 150;
     }
@@ -684,6 +685,8 @@ Upload frame_upload_alloc(uint64_t size, uint64_t align) {
                 g_current->waited = g_current->part;
             }
             log("nvn/vk: upload buffer full (%llu bytes in this submit)", (unsigned long long)(at + size - g_begin));
+            Upload s = staging_alloc(size);
+            if (s.buffer != VK_NULL_HANDLE) return s;
             g_tail = at + size - g_ring_size;  // this submit wraps over its own first data, as the synchronous path
             replay::dedup_reset();
             break;
@@ -840,9 +843,9 @@ Upload staging_alloc(uint64_t size) {
     VkDevice d = vk_device();
     VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bi.size = size;
-    bi.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bi.usage = kUploadUsage;
     VkBuffer buffer = VK_NULL_HANDLE;
-    if (p_vkCreateBuffer(d, &bi, nullptr, &buffer) != VK_SUCCESS) return upload_alloc(size, 16);
+    if (p_vkCreateBuffer(d, &bi, nullptr, &buffer) != VK_SUCCESS) return {VK_NULL_HANDLE, 0, nullptr};
     VkMemoryRequirements req{};
     p_vkGetBufferMemoryRequirements(d, buffer, &req);
     VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
@@ -855,7 +858,7 @@ Upload staging_alloc(uint64_t size) {
         p_vkMapMemory(d, memory, 0, VK_WHOLE_SIZE, 0, &p) != VK_SUCCESS) {
         p_vkDestroyBuffer(d, buffer, nullptr);
         if (memory) p_vkFreeMemory(d, memory, nullptr);
-        return upload_alloc(size, 16);
+        return {VK_NULL_HANDLE, 0, nullptr};
     }
     std::lock_guard lk(g_grave_lock);
     g_staging.push_back({g_submitted + 1, buffer, memory});
